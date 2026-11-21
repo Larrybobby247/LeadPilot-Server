@@ -10,6 +10,7 @@ export const config = {
   appUrl: process.env.APP_URL || 'http://localhost:5173',
   corsOrigins: (process.env.CORS_ORIGINS || 'http://localhost:5173').split(',').map((s) => s.trim()),
   geminiKey: process.env.GEMINI_API_KEY || '', geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  setupToken: process.env.SETUP_TOKEN || '', // one-time owner creation; remove after use
   reminderEmail: process.env.REMINDER_EMAIL || '',
   resendKey: process.env.RESEND_API_KEY || '', emailFrom: process.env.EMAIL_FROM || 'LeadPilot <no-reply@example.com>',
 };
