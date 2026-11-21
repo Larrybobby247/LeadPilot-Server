@@ -7,6 +7,7 @@ import { encrypt, decrypt } from '../utils/crypto.js';
 import { DEFAULT_WEIGHTS } from '../services/scoring.js';
 import { DEFAULT_INTERVALS } from '../services/followups.js';
 import { log } from '../services/activity.js';
+import { productUpdates } from '../services/settings.js';
 import { config } from '../config.js';
 
 const r = Router(); r.use(requireAuth);
@@ -28,10 +29,12 @@ r.get('/discovery/history', wrap(async (req, res) => { const f = req.user.role =
 const defaults = (s) => ({ scoringWeights: s?.scoringWeights || DEFAULT_WEIGHTS, followUpIntervals: s?.followUpIntervals?.length ? s.followUpIntervals : DEFAULT_INTERVALS, defaultCountryCode: s?.defaultCountryCode || '234', products: s?.products || {}, collisionPolicy: s?.collisionPolicy || 'filter' });
 r.get('/settings', wrap(async (req, res) => { const d = defaults(await Setting.findOne({ key: 'global' })); res.json(req.user.role === 'owner' ? d : { followUpIntervals: d.followUpIntervals }); }));
 r.put('/settings', requireOwner, wrap(async (req, res) => {
-  const b = z.object({ collisionPolicy: z.enum(['filter', 'allow']).optional(), scoringWeights: z.record(z.number().min(0).max(100)).optional(), followUpIntervals: z.array(z.number().int().min(1).max(60)).min(1).max(5).optional(), defaultCountryCode: z.string().regex(/^\d{1,3}$/).optional(),
-    products: z.record(z.object({ productName: z.string().max(80).optional(), description: z.string().max(1000).optional(), pricing: z.string().max(1000).optional(), competitorNotes: z.string().max(1500).optional(), demoLink: z.string().url().optional().or(z.literal('')), signupLink: z.string().url().optional().or(z.literal('')) })).optional() }).parse(req.body);
+  const b = z.object({ collisionPolicy: z.enum(['filter', 'allow']).optional(), scoringWeights: z.record(z.number().min(0).max(100)).optional(), followUpIntervals: z.array(z.number().int().min(1).max(60)).min(1).max(5).optional(), defaultCountryCode: z.string().regex(/^\d{1,3}$/).optional(), products: z.record(z.any()).optional() }).parse(req.body);
   if (b.scoringWeights && Object.keys(b.scoringWeights).some((k) => !(k in DEFAULT_WEIGHTS))) throw new HttpError(400, 'Unknown scoring field');
-  await Setting.updateOne({ key: 'global' }, { $set: b }, { upsert: true }); await log(req, 'settings.updated', 'Setting', undefined, { keys: Object.keys(b) }); res.json(defaults(await Setting.findOne({ key: 'global' }))); }));
+  const { products, ...rest } = b; const { set, unset, errors } = productUpdates(products); if (errors.length) throw new HttpError(400, errors[0].message, { issues: errors });
+  await Setting.updateOne({ key: 'global', $or: [{ products: null }, { products: { $exists: false } }] }, { $set: { products: {} } }); // make sure the parent object exists before field-level updates
+  const update = {}; if (Object.keys({ ...rest, ...set }).length) update.$set = { ...rest, ...set }; if (Object.keys(unset).length) update.$unset = unset;
+  if (Object.keys(update).length) await Setting.updateOne({ key: 'global' }, update, { upsert: true }); await log(req, 'settings.updated', 'Setting', undefined, { keys: [...Object.keys(rest), ...Object.keys(set), ...Object.keys(unset)] }); res.json(defaults(await Setting.findOne({ key: 'global' }))); }));
 
 // Integrations: only what is actually implemented. Nothing is shown "connected" without a successful test.
 const INTEGRATIONS = { google_places: { name: 'Google Places / Maps', costNote: 'Billing may be required. Google Maps Platform bills per request beyond its free allowance; set a monthly limit here.', testable: true },
