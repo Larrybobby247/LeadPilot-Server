@@ -4,7 +4,8 @@ import { z } from 'zod';
 import crypto from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
-import { config } from '../config.js';
+import { config, DEPARTMENTS } from '../config.js';
+import { buildSchedule } from '../services/goals.js';
 import { User } from '../models/index.js';
 import { HttpError, wrap, requireAuth, signAccess, signRefresh } from '../middleware/auth.js';
 import { randomToken, sha256 } from '../utils/crypto.js';
@@ -64,4 +65,14 @@ r.post('/change-password', requireAuth, wrap(async (req, res) => {
 }));
 r.get('/sessions', requireAuth, wrap(async (req, res) => { const u = await User.findById(req.user._id).select('+sessions'); res.json({ items: u.sessions.map((s) => ({ id: s.sid, userAgent: s.userAgent, ip: s.ip, createdAt: s.createdAt })) }); }));
 r.delete('/sessions/:sid', requireAuth, wrap(async (req, res) => { await User.updateOne({ _id: req.user._id }, { $pull: { sessions: { sid: req.params.sid } } }); res.json({ ok: true }); }));
+// One-time bootstrap for the first owner (instead of `npm run seed`). Works only while SETUP_TOKEN is set AND no owner exists yet.
+r.post('/setup', limiter, wrap(async (req, res) => {
+  if (!config.setupToken) throw new HttpError(404, 'Not found');
+  const b = z.object({ token: z.string().min(8), name: z.string().trim().min(2).max(100), email: z.string().email(), password: passwordRule }).parse(req.body);
+  const a = Buffer.from(b.token), t = Buffer.from(config.setupToken); if (a.length !== t.length || !crypto.timingSafeEqual(a, t)) throw new HttpError(403, 'Invalid setup token');
+  if (await User.exists({ role: 'owner' })) throw new HttpError(409, 'An owner already exists');
+  const user = await User.create({ name: b.name, email: b.email.toLowerCase(), passwordHash: await bcrypt.hash(b.password, 12), role: 'owner', departments: [...DEPARTMENTS],
+    goals: { schedule: buildSchedule([...DEPARTMENTS], 40), remindersEnabled: true, weeklyReportEnabled: true } });
+  res.status(201).json({ ok: true, email: user.email, next: 'Remove SETUP_TOKEN from the server environment, then sign in.' });
+}));
 export default r;
