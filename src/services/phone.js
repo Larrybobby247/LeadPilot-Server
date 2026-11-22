@@ -12,3 +12,9 @@ export function normalizePhone(raw, cc = '234') {
 }
 export const isValidPhone = (raw, cc) => !!normalizePhone(raw, cc);
 export const waUrl = (phone, message = '') => { const n = normalizePhone(phone); return n ? `https://wa.me/${n}?text=${encodeURIComponent(message)}` : null; };
+// Links for opening a chat. 'androidBusiness' targets the WhatsApp Business app explicitly (falls back to the normal link if it is not installed);
+// 'web' opens WhatsApp Web, which works for Business accounts too. iPhone has no reliable per-app link, so it uses 'standard'.
+export function waLinks(phone, message = '') {
+  const n = normalizePhone(phone); if (!n) return null; const text = encodeURIComponent(message); const standard = `https://wa.me/${n}?text=${text}`;
+  return { standard, web: `https://web.whatsapp.com/send?phone=${n}&text=${text}`, androidBusiness: `intent://send?phone=${n}&text=${text}#Intent;scheme=whatsapp;package=com.whatsapp.w4b;S.browser_fallback_url=${encodeURIComponent(standard)};end` };
+}
