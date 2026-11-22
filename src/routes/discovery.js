@@ -8,6 +8,7 @@ import { decrypt } from '../utils/crypto.js';
 import { buildTextQuery, searchPlaces, placeToRecord, isOpen, regionCode, PlacesError } from '../services/places.js';
 import { parseResultsText } from '../services/pasteParser.js';
 import { log } from '../services/activity.js';
+import { canonicalState, resolveState, territoryCheck } from '../data/nigeria.js';
 
 const r = Router(); r.use(requireAuth);
 const month = () => new Date().toISOString().slice(0, 7);
@@ -26,10 +27,13 @@ r.post('/generate', lim, wrap(async (req, res) => {
   if (!s.monthlyLimit) throw new HttpError(422, 'Set a monthly request limit under Integrations first, so the search can never run up charges unexpectedly.', { code: 'NO_LIMIT' });
   const used = (await usageOf()).units; const needed = Math.ceil(b.maxResults / 20); if (used + needed > s.monthlyLimit) throw new HttpError(429, `This search could exceed the monthly limit of ${s.monthlyLimit} requests (${used} used). Raise the limit under Integrations or ask for fewer results.`, { code: 'LIMIT' });
   let textQuery; try { textQuery = buildTextQuery(b); } catch (e) { throw new HttpError(e.status || 400, e.message); }
+  // Territory: the state being searched (from the pasted link, else the chosen state/city) must be one the user is assigned. Checked before any Google request is spent.
+  const where = (b.pastedUrl?.trim() ? resolveState({ text: textQuery }) : null) || canonicalState(b.state) || resolveState({ city: b.city, text: textQuery });
+  const terr = territoryCheck(req.user, where); if (!terr.ok) throw new HttpError(403, terr.reason, { code: 'OUTSIDE_TERRITORY' });
   try {
     const { places, requests } = await searchPlaces({ apiKey: decrypt(s.secretEnc), textQuery, maxResults: b.maxResults, region: regionCode(b.country) });
     await UsageRecord.updateOne({ integration: 'google_places', month: month() }, { $inc: { units: requests } }, { upsert: true });
-    const records = places.filter(isOpen).map((p) => placeToRecord(p, { category: b.category, city: b.city, state: b.state })).filter((x) => x.name);
+    const records = places.filter(isOpen).map((p) => placeToRecord(p, { category: b.category, city: b.city, state: where || undefined })).filter((x) => x.name);
     await log(req, 'discovery.generated', 'Discovery', undefined, { query: textQuery, found: records.length, requests }, b.department);
     res.json({ query: textQuery, count: records.length, records, requests, remaining: Math.max(0, s.monthlyLimit - used - requests) });
   } catch (e) {
@@ -39,8 +43,9 @@ r.post('/generate', lim, wrap(async (req, res) => {
 }));
 // No API needed: copy a Google results page, paste it here, and get a reviewable list.
 r.post('/parse-text', wrap(async (req, res) => {
-  const b = z.object({ department: z.enum(DEPARTMENTS), text: z.string().min(10).max(200000), category: z.string().max(100).optional(), city: z.string().max(100).optional() }).parse(req.body);
-  if (!hasDept(req.user, b.department)) throw new HttpError(403, 'No access to this workspace'); const records = parseResultsText(b.text, b).slice(0, 200);
+  const b = z.object({ department: z.enum(DEPARTMENTS), text: z.string().min(10).max(200000), category: z.string().max(100).optional(), city: z.string().max(100).optional(), state: z.string().max(100).optional() }).parse(req.body);
+  if (!hasDept(req.user, b.department)) throw new HttpError(403, 'No access to this workspace'); const st = canonicalState(b.state); if (st) { const t = territoryCheck(req.user, st); if (!t.ok) throw new HttpError(403, t.reason, { code: 'OUTSIDE_TERRITORY' }); }
+  const records = parseResultsText(b.text, b).slice(0, 200).map((x) => ({ ...x, state: st || undefined }));
   if (!records.length) throw new HttpError(422, 'No results found in that text. Copy the whole Google results page (Ctrl+A, Ctrl+C) and paste it again.'); res.json({ count: records.length, records });
 }));
 export default r;

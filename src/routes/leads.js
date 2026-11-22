@@ -8,13 +8,14 @@ import { completeness } from '../services/scoring.js';
 import { keysFor, mergeFields, normalizeName } from '../services/dedupe.js';
 import { log, notify } from '../services/activity.js';
 import { applyStatus } from '../services/leadStatus.js';
+import { canonicalState, stateAllowed } from '../data/nigeria.js';
 import { Setting } from '../models/index.js';
 
 const r = Router(); r.use(requireAuth);
 export const recordSchema = z.object({ name: z.string().trim().max(200).optional().default(''), category: z.string().max(100).optional(), phone: z.string().max(40).optional(), email: z.string().max(200).optional(), website: z.string().max(300).optional(),
   social: z.string().max(300).optional(), city: z.string().max(100).optional(), location: z.string().max(100).optional(), state: z.string().max(100).optional(), address: z.string().max(300).optional(),
   sourceUrl: z.string().max(1000).optional(), verification: z.enum(['verified', 'unverified', 'requires_review']).optional(), notes: z.array(z.string()).optional(), action: z.enum(['skip', 'update', 'associate', 'import_new', 'override']).optional() });
-const importBody = z.object({ department: z.enum(DEPARTMENTS), source: z.enum(['google_search', 'chrome_extension', 'csv_import', 'google_maps', 'manual']), method: z.string().optional(), query: z.string().max(300).optional(), sourceUrl: z.string().max(1000).optional(), records: z.array(recordSchema).min(1).max(500) });
+const importBody = z.object({ department: z.enum(DEPARTMENTS), source: z.enum(['google_search', 'chrome_extension', 'csv_import', 'google_maps', 'manual']), method: z.string().optional(), query: z.string().max(300).optional(), state: z.string().max(100).optional(), city: z.string().max(100).optional(), sourceUrl: z.string().max(1000).optional(), records: z.array(recordSchema).min(1).max(500) });
 
 export const shape = (l) => { const b = l.business || {}; return { id: l._id, department: l.department, status: l.status, source: l.source, sourceUrl: l.sourceUrl, verification: l.verification, completeness: l.completeness, completenessBand: l.completenessBand, assignedTo: l.assignedTo?.name ? { id: l.assignedTo._id, name: l.assignedTo.name } : l.assignedTo,
   campaign: l.campaign, contactPerson: l.contactPerson, whatsappNumber: l.whatsappNumber, whatsappVerified: l.whatsappVerified, archived: l.archived, followUpsPaused: l.followUpsPaused, discoveredAt: l.discoveredAt, lastContactedAt: l.lastContactedAt, nextFollowUpAt: l.nextFollowUpAt,
@@ -51,7 +52,8 @@ r.get('/:id', wrap(async (req, res) => {
 
 r.post('/', wrap(async (req, res) => { // manual entry
   const b = importBody.omit({ source: true, records: true }).extend({ record: recordSchema }).parse(req.body); if (!hasDept(req.user, b.department)) throw new HttpError(403, 'No access to this workspace');
-  const out = await importRecords({ user: req.user, department: b.department, records: [b.record], source: 'manual', method: 'manual' });
+  const out = await importRecords({ user: req.user, department: b.department, records: [b.record], source: 'manual', method: 'manual', contextState: b.state, contextCity: b.city });
+  if (out.outside.length) return res.status(403).json({ message: out.outside[0].reason, ...out });
   if (out.imported.length + out.review.length) { await log(req, 'lead.created', 'Lead', (out.imported[0] || out.review[0]).leadId, {}, b.department); return res.status(201).json(out); }
   if (out.duplicates.length || out.potential.length || out.taken.length) { await log(req, 'duplicate.prevented', 'Lead', undefined, { count: out.duplicates.length + out.potential.length + out.taken.length, via: 'manual' }, b.department); return res.status(409).json({ message: 'Possible duplicate detected. This business already exists in your LeadPilot database.', ...out }); }
   res.status(422).json(out);
@@ -60,16 +62,16 @@ r.post('/', wrap(async (req, res) => { // manual entry
 r.post('/bulk-import', wrap(async (req, res) => { // CSV + discovery
   const b = importBody.parse(req.body); if (!hasDept(req.user, b.department)) throw new HttpError(403, 'No access to this workspace');
   const job = await ImportJob.create({ user: req.user._id, department: b.department, source: b.source, method: b.method || b.source, query: b.query, sourceUrl: b.sourceUrl, counts: { collected: b.records.length } });
-  const out = await importRecords({ user: req.user, department: b.department, records: b.records, source: b.source, method: b.method, query: b.query, sourceUrl: b.sourceUrl, jobId: job._id });
-  job.counts = { collected: b.records.length, imported: out.imported.length, duplicates: out.duplicates.length + out.potential.length + out.taken.length, rejected: out.rejected.length, review: out.review.length }; job.status = out.imported.length + out.review.length + out.updated.length ? (out.rejected.length ? 'Partial' : 'Completed') : 'Failed'; await job.save();
+  const out = await importRecords({ user: req.user, department: b.department, records: b.records, source: b.source, method: b.method, query: b.query, sourceUrl: b.sourceUrl, jobId: job._id, contextState: b.state, contextCity: b.city });
+  job.counts = { collected: b.records.length, imported: out.imported.length, duplicates: out.duplicates.length + out.potential.length + out.taken.length, rejected: (out.rejected.length + out.outside.length), review: out.review.length }; job.status = out.imported.length + out.review.length + out.updated.length ? ((out.rejected.length + out.outside.length) ? 'Partial' : 'Completed') : 'Failed'; await job.save();
   if (job.counts.duplicates) await log(req, 'duplicate.prevented', 'ImportJob', job._id, { count: job.counts.duplicates, via: b.source }, b.department);
   await log(req, b.source === 'csv_import' ? 'csv.imported' : 'lead.imported', 'ImportJob', job._id, job.counts, b.department);
-  await notify(req.user._id, 'import_completed', `Import finished: ${out.imported.length} added`, `${out.duplicates.length} already existed, ${out.rejected.length} rejected`, '/leads'); res.json({ jobId: job._id, ...out });
+  await notify(req.user._id, 'import_completed', `Import finished: ${out.imported.length} added`, `${out.duplicates.length} already existed, ${(out.rejected.length + out.outside.length)} rejected`, '/leads'); res.json({ jobId: job._id, ...out });
 }));
 r.post('/preview', wrap(async (req, res) => { // dry run, nothing saved: new / duplicate / potential / associate / rejected
   const b = importBody.omit({ source: true }).parse(req.body); if (!hasDept(req.user, b.department)) throw new HttpError(403, 'No access to this workspace');
   const items = []; const seen = new Set();
-  for (const rec of b.records) { const ev = await evaluate(rec, b.department, req.user); const k = ev.keys ? [...ev.keys.phones, ...ev.keys.domains, ...ev.keys.socials, ...ev.keys.emails] : [];
+  for (const rec of b.records) { const ev = await evaluate(rec, b.department, req.user, { query: b.query, contextState: canonicalState(b.state) || undefined, contextCity: b.city }); const k = ev.keys ? [...ev.keys.phones, ...ev.keys.domains, ...ev.keys.socials, ...ev.keys.emails] : [];
     let kind = ev.kind; if (kind === 'new' && k.some((x) => seen.has(x))) kind = 'duplicate'; k.forEach((x) => seen.add(x)); // repeats inside the same batch
     items.push({ name: rec.name, kind, reason: ev.reason, matchedOn: ev.matchedOn?.join(', '), existing: ev.existing }); }
   res.json({ items }); }));
@@ -99,6 +101,7 @@ r.delete('/:id', wrap(async (req, res) => { const l = await loadLead(req, false)
 
 r.post('/:id/assign', requireOwner, wrap(async (req, res) => { const { userId } = z.object({ userId: z.string() }).parse(req.body); const l = await Lead.findById(req.params.id); if (!l) throw new HttpError(404, 'Lead not found');
   const u = await User.findOne({ _id: userId, active: true }); if (!u || !hasDept(u, l.department)) throw new HttpError(400, 'That team member does not have access to this workspace');
+  const biz = await Business.findById(l.business).select('state'); if (!stateAllowed(u, biz?.state)) throw new HttpError(400, `${u.name} is not assigned ${biz.state}. Add that state to their territory first.`);
   l.assignedTo = u._id; await l.save(); await FollowUp.updateMany({ lead: l._id, status: 'Pending' }, { user: u._id }); await log(req, 'lead.assigned', 'Lead', l._id, { to: u._id }, l.department); await notify(u._id, 'lead_assigned', 'New lead assigned', undefined, `/leads/${l._id}`); res.json({ ok: true }); }));
 r.post('/:id/merge', wrap(async (req, res) => { // merge incoming fields into an existing lead's business; never overwrites verified data
   const { incoming } = z.object({ incoming: recordSchema }).parse(req.body); const l = await loadLead(req, false); const b = await Business.findById(l.business);

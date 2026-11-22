@@ -17,7 +17,7 @@ const limiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders
 const COOKIE = { httpOnly: true, secure: config.prod, sameSite: config.prod ? 'none' : 'lax', path: '/api/auth', maxAge: 30 * 864e5 };
 const DUMMY = bcrypt.hashSync('not-a-real-password', 10);
 export const passwordRule = z.string().min(10, 'Use at least 10 characters').max(128).regex(/[a-z]/, 'Add a lowercase letter').regex(/[A-Z]/, 'Add an uppercase letter').regex(/\d/, 'Add a number');
-export const publicUser = (u) => ({ id: u._id, name: u.name, email: u.email, role: u.role, departments: u.role === 'owner' ? ['ordarly', 'keykonnec', 'website'] : u.departments });
+export const publicUser = (u) => ({ id: u._id, name: u.name, email: u.email, role: u.role, departments: u.role === 'owner' ? ['ordarly', 'keykonnec', 'website'] : u.departments, states: u.states || [] });
 
 export async function startSession(req, res, user) {
   const sid = crypto.randomUUID(); const refresh = signRefresh(user, sid);

@@ -4,6 +4,7 @@ import { Lead, OutreachEvent, MessageTemplate, FollowUp, Setting } from '../mode
 import { HttpError, wrap, requireAuth, leadScope } from '../middleware/auth.js';
 import { render } from '../services/templates.js';
 import { waUrl, waLinks, normalizePhone } from '../services/phone.js';
+import { stateAllowed } from '../data/nigeria.js';
 import { scheduleNext, refreshNext, OPEN } from '../services/followupOps.js';
 import { log } from '../services/activity.js';
 
@@ -11,6 +12,7 @@ const r = Router(); r.use(requireAuth);
 const getLead = async (req, id) => { const l = await Lead.findOne(leadScope(req.user, { _id: id })).populate('business'); if (!l) throw new HttpError(404, 'Lead not found'); return l; };
 async function varsFor(req, l) { const s = await Setting.findOne({ key: 'global' }); const p = s?.products?.[l.department] || {}; const b = l.business;
   return { business_name: b.name, contact_name: l.contactPerson, business_category: b.category, city: b.city, state: b.state, sender_name: req.user.name, product_name: p.productName, demo_link: p.demoLink, signup_link: p.signupLink, website_url: b.website }; }
+const assertTerritory = (req, l) => { if (!stateAllowed(req.user, l.business?.state)) throw new HttpError(403, `This lead is in ${l.business.state}, which is not one of your assigned states.`); };
 const numberFor = (l) => normalizePhone(l.whatsappNumber) || l.business.phones?.[0] || null;
 
 r.post('/preview', wrap(async (req, res) => {
@@ -20,7 +22,7 @@ r.post('/preview', wrap(async (req, res) => {
 }));
 r.post('/opened', wrap(async (req, res) => {
   const b = z.object({ leadId: z.string(), templateId: z.string().optional(), message: z.string().min(1).max(2000), channel: z.enum(['whatsapp', 'whatsapp_business']).default('whatsapp'), force: z.boolean().optional() }).parse(req.body);
-  const l = await getLead(req, b.leadId); const n = numberFor(l); if (!n) throw new HttpError(422, 'This lead has no usable phone number');
+  const l = await getLead(req, b.leadId); assertTerritory(req, l); const n = numberFor(l); if (!n) throw new HttpError(422, 'This lead has no usable phone number');
   if (['Do Not Contact', 'Invalid Contact'].includes(l.status)) throw new HttpError(422, `This lead is marked "${l.status}"`);
   if (l.campaign && !b.force && await OutreachEvent.exists({ lead: l._id, campaign: l.campaign, type: 'confirmed_sent', at: { $gt: new Date(Date.now() - 864e5) } }))
     throw new HttpError(409, 'You already sent a message to this lead in this campaign in the last 24 hours.', { code: 'ALREADY_CONTACTED' });
@@ -32,7 +34,7 @@ async function completeOutreach(req, l) { // a recorded, genuine contact: status
   if (['New', 'Outreach Opened', 'No Response'].includes(l.status)) l.status = 'Contacted'; if (!l.contactedAt) l.contactedAt = new Date(); l.lastContactedAt = new Date(); await l.save();
   const done = await FollowUp.find({ lead: l._id, status: { $in: OPEN } }); for (const f of done) { f.status = 'Completed'; f.completedAt = new Date(); await f.save(); } await refreshNext(l._id); return scheduleNext(l); }
 r.post('/record', wrap(async (req, res) => { // email / call / other contact the user did and is recording as completed (counts toward goals; opens and AI drafts never do)
-  const b = z.object({ leadId: z.string(), channel: z.enum(['email', 'call', 'other']), note: z.string().max(500).optional() }).parse(req.body); const l = await getLead(req, b.leadId);
+  const b = z.object({ leadId: z.string(), channel: z.enum(['email', 'call', 'other']), note: z.string().max(500).optional() }).parse(req.body); const l = await getLead(req, b.leadId); assertTerritory(req, l);
   if (['Do Not Contact', 'Invalid Contact'].includes(l.status)) throw new HttpError(422, `This lead is marked "${l.status}"`);
   await OutreachEvent.create({ lead: l._id, user: req.user._id, department: l.department, campaign: l.campaign, type: 'confirmed_sent', channel: b.channel, message: b.note }); const next = await completeOutreach(req, l); await log(req, 'outreach.recorded', 'Lead', l._id, { channel: b.channel }, l.department); res.json({ ok: true, nextFollowUpAt: next?.dueAt || null }); }));
 const confirmBody = z.object({ leadId: z.string().optional(), eventId: z.string().optional(), sent: z.boolean(), message: z.string().max(2000).optional(), templateId: z.string().optional(), channel: z.enum(['whatsapp', 'whatsapp_business']).default('whatsapp') })
@@ -49,6 +51,7 @@ r.post('/confirm-sent', wrap(async (req, res) => {
     if (l.status === 'Outreach Opened' && !(await OutreachEvent.exists({ lead: l._id, type: 'opened' }))) { l.status = 'New'; await l.save(); }
     await log(req, 'outreach.not_sent', 'Lead', l._id, {}, l.department); return res.json({ ok: true, counted: false });
   }
+  assertTerritory(req, l);
   if (['Do Not Contact', 'Invalid Contact'].includes(l.status)) throw new HttpError(422, `This lead is marked "${l.status}"`);
   const recent = await OutreachEvent.findOne({ lead: l._id, user: req.user._id, type: 'confirmed_sent', at: { $gt: new Date(Date.now() - 60e3) } }); // double click guard
   if (recent) { if (ev) await ev.deleteOne(); return res.json({ ok: true, counted: true, duplicate: true, eventId: recent._id }); }
