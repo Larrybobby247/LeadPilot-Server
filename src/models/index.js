@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { DEPARTMENTS, LEAD_STATUSES } from '../config.js';
+import { STATE_NAMES } from '../data/nigeria.js';
 const { Schema, model } = mongoose; const oid = Schema.Types.ObjectId;
 const opts = { timestamps: true };
 const dept = { type: String, enum: DEPARTMENTS, required: true };
@@ -10,12 +11,14 @@ export const User = model('User', new Schema({
   departments: [{ type: String, enum: DEPARTMENTS }], active: { type: Boolean, default: true }, lastActiveAt: Date,
   sessions: { type: [{ sid: String, tokenHash: String, userAgent: String, ip: String, createdAt: Date, expiresAt: Date }], select: false },
   resetTokenHash: { type: String, select: false }, resetExpires: { type: Date, select: false },
+  states: [{ type: String, enum: STATE_NAMES }], // outreach territory. Empty = not restricted yet (existing users); owners are never restricted
   goals: { schedule: { type: [{ _id: false, day: { type: Number, min: 0, max: 6 }, campaign: String, target: { type: Number, min: 0, max: 1000 } }], default: [] }, remindersEnabled: { type: Boolean, default: true }, weeklyReportEnabled: { type: Boolean, default: false }, selfEditable: { type: Boolean, default: false }, reminderEmail: String },
 }, opts));
 
 export const Invitation = model('Invitation', new Schema({
   email: { type: String, required: true, lowercase: true }, name: String, role: { type: String, enum: ['owner', 'member'], default: 'member' },
-  departments: [{ type: String, enum: DEPARTMENTS }], tokenHash: { type: String, required: true, index: true }, expiresAt: { type: Date, required: true },
+  departments: [{ type: String, enum: DEPARTMENTS }], states: [{ type: String, enum: STATE_NAMES }], tokenHash: { type: String, required: true, index: true }, expiresAt: { type: Date, required: true },
+  states: [{ type: String, enum: STATE_NAMES }], // outreach territory. Empty = not restricted yet (existing users); owners are never restricted
   goals: { schedule: { type: [{ _id: false, day: { type: Number, min: 0, max: 6 }, campaign: String, target: { type: Number, min: 0, max: 1000 } }], default: [] }, remindersEnabled: { type: Boolean, default: true }, weeklyReportEnabled: { type: Boolean, default: false }, selfEditable: { type: Boolean, default: false }, reminderEmail: String }, status: { type: String, enum: ['pending', 'accepted', 'revoked'], default: 'pending' }, invitedBy: { type: oid, ref: 'User' }, acceptedAt: Date,
 }, opts));
 
