@@ -3,6 +3,7 @@ import { keysFor, compare, normalizeName, businessKeys, isExact, mergeFields, de
 import { completeness } from './scoring.js';
 import { normalizePhone } from './phone.js';
 import { checkWebsite } from './websiteCheck.js';
+import { resolveLocation, canonicalState, territoryCheck } from '../data/nigeria.js';
 
 const clean = (r) => ({ name: String(r.name || '').trim().slice(0, 200), category: r.category?.trim(), city: (r.city || r.location || '').trim() || undefined, state: r.state?.trim(), country: r.country?.trim(), address: r.address?.trim(),
   phone: r.phone, email: r.email?.trim(), website: r.website?.trim(), social: r.social?.trim(), instagram: r.instagram, facebook: r.facebook, linkedin: r.linkedin });
@@ -20,8 +21,12 @@ export async function findBusinessMatch(rec) {
 }
 
 // One decision function for both the dry-run preview and the real import, so what the user reviews is what happens.
-export async function evaluate(raw, department, user) {
+export async function evaluate(raw, department, user, ctx = {}) {
   const c = clean(raw); if (!c.name) return { kind: 'rejected', reason: 'Business name is missing', c };
+  // Where is this business? Its own state/city, then its address, then the search it came from, then the state the user was working in.
+  const loc = resolveLocation({ state: c.state, city: c.city, address: c.address, text: ctx.query, contextState: ctx.contextState });
+  c.state = loc.state || undefined; if (!c.city) c.city = loc.city || (loc.state && loc.state === ctx.contextState ? ctx.contextCity : undefined) || undefined;
+  const terr = territoryCheck(user, loc.state); if (!terr.ok) return { kind: 'outside', reason: terr.reason, c }; // outside the user's assigned states: never imported
   const { keys, match, matchedOn } = await findBusinessMatch(c);
   if (raw.phone && !keys.phones.length && !c.email && !c.website && !c.social) return { kind: 'rejected', reason: 'Phone number is not valid', c };
   if (!keys.phones.length && !keys.emails.length && !keys.domains.length && !keys.socials.length) return { kind: 'rejected', reason: 'No phone, email, website or profile link', c };
@@ -51,8 +56,9 @@ async function claimKeys(businessId, keys, { tolerate = false } = {}) {
 const isDupErr = (e) => e?.code === 11000;
 const asReview = (v) => v === 'requires_review';
 
-export async function importRecords({ user, department, records, source, method, query, sourceUrl, jobId }) {
-  const out = { imported: [], associated: [], updated: [], duplicates: [], potential: [], taken: [], rejected: [], review: [] }; const toVerify = [];
+export async function importRecords({ user, department, records, source, method, query, sourceUrl, jobId, contextState, contextCity }) {
+  const ctx = { query, contextState: canonicalState(contextState) || undefined, contextCity: contextCity || undefined };
+  const out = { imported: [], associated: [], updated: [], duplicates: [], potential: [], taken: [], outside: [], rejected: [], review: [] }; const toVerify = [];
   const mk = (raw, extra = {}) => ({ name: raw.name || 'Unnamed record', ...extra });
   async function createLead(business, raw, verification) {
     const lead = new Lead({ business: business._id, department, assignedTo: user._id, source, sourceUrl: raw.sourceUrl || sourceUrl, discoveryMethod: method, verification, importJob: jobId });
@@ -61,9 +67,10 @@ export async function importRecords({ user, department, records, source, method,
   for (const raw of records) {
     const verification = ['verified', 'unverified', 'requires_review'].includes(raw.verification) ? raw.verification : 'unverified'; const action = raw.action; const owner = user.role === 'owner';
     for (let attempt = 0; attempt < 2; attempt++) { // a lost race is retried once; the retry sees the winner and reports a duplicate
-      const ev = await evaluate(raw, department, user); const label = ev.c.name || 'Unnamed record';
+      const ev = await evaluate(raw, department, user, ctx); const label = ev.c.name || 'Unnamed record';
       try {
         if (ev.kind === 'rejected') { out.rejected.push(mk(raw, { reason: ev.reason })); break; }
+        if (ev.kind === 'outside') { out.outside.push(mk(raw, { reason: ev.reason })); break; }
         if (ev.kind === 'taken') { out.taken.push(mk(raw, { reason: 'Already held by a teammate', matchedOn: ev.matchedOn.join(', ') })); break; } // filtered out, no override for members
         let businessForNew = null;
         if (ev.kind === 'duplicate' || ev.kind === 'potential') {
