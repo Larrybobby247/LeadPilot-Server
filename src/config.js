@@ -10,6 +10,9 @@ export const config = {
   appUrl: process.env.APP_URL || 'http://localhost:5173',
   corsOrigins: (process.env.CORS_ORIGINS || 'http://localhost:5173').split(',').map((s) => s.trim()),
   geminiKey: process.env.GEMINI_API_KEY || '', geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  // Website templates (uploaded ZIPs are never executed; limits protect against oversized or zip-bomb uploads)
+  templateMaxBytes: +(process.env.WEBSITE_TEMPLATE_MAX_MB || 30) * 1048576, extractMaxBytes: +(process.env.WEBSITE_EXTRACT_MAX_MB || 100) * 1048576, maxSiteFiles: +(process.env.WEBSITE_MAX_FILES || 2000),
+  storageDriver: process.env.STORAGE_DRIVER || 'gridfs', storageDir: process.env.STORAGE_DIR || './storage',
   setupToken: process.env.SETUP_TOKEN || '', // one-time owner creation; remove after use
   reminderEmail: process.env.REMINDER_EMAIL || '',
   resendKey: process.env.RESEND_API_KEY || '', emailFrom: process.env.EMAIL_FROM || 'LeadPilot <no-reply@example.com>',
