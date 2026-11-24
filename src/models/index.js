@@ -136,3 +136,16 @@ export const ReminderLog = model('ReminderLog', new Schema({
   status: { type: String, enum: ['sending', 'sent', 'failed', 'skipped'], default: 'sending' }, attempts: { type: Number, default: 1 }, to: String, error: String, summary: Schema.Types.Mixed,
 }, opts));
 ReminderLog.schema.index({ user: 1, kind: 1, dateKey: 1 }, { unique: true }); // one reminder of each kind per user per day, even across restarts or multiple instances
+
+// One active website template per website-outreach category (the category list is the existing Category collection).
+export const WebsiteTemplate = model('WebsiteTemplate', new Schema({
+  category: { type: String, required: true }, categoryKey: { type: String, required: true, unique: true }, categoryId: { type: oid, ref: 'Category' }, name: String, version: { type: Number, default: 1 },
+  fileId: { type: String, required: true }, size: Number, fileCount: Number, htmlFiles: [String], entry: String,
+  placeholders: [{ _id: false, name: String, count: Number, files: [String] }], mappings: { type: Schema.Types.Mixed, default: {} }, configured: { type: Boolean, default: false },
+  uploadedBy: { type: oid, ref: 'User' },
+}, opts));
+// The personalised site for one lead (the ZIP itself lives in file storage). One per lead; regenerated in place.
+export const GeneratedWebsite = model('GeneratedWebsite', new Schema({
+  lead: { type: oid, ref: 'Lead', required: true, unique: true }, business: { type: oid, ref: 'Business' }, businessName: String, category: String, template: { type: oid, ref: 'WebsiteTemplate' }, templateVersion: Number,
+  dataHash: String, fileId: String, size: Number, filename: String, unfilled: [String], warnings: [String], status: { type: String, enum: ['generating', 'ready', 'failed'], default: 'generating' }, error: String, generatedAt: Date, requestedBy: { type: oid, ref: 'User' },
+}, opts));
