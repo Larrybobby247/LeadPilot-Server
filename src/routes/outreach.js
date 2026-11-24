@@ -5,6 +5,7 @@ import { HttpError, wrap, requireAuth, leadScope } from '../middleware/auth.js';
 import { render } from '../services/templates.js';
 import { waUrl, waLinks, normalizePhone } from '../services/phone.js';
 import { stateAllowed } from '../data/nigeria.js';
+import { startGeneration } from '../services/websiteGen.js';
 import { scheduleNext, refreshNext, OPEN } from '../services/followupOps.js';
 import { log } from '../services/activity.js';
 
@@ -32,7 +33,9 @@ r.post('/opened', wrap(async (req, res) => {
 }));
 async function completeOutreach(req, l) { // a recorded, genuine contact: status, timestamps, follow-up chain
   if (['New', 'Outreach Opened', 'No Response'].includes(l.status)) l.status = 'Contacted'; if (!l.contactedAt) l.contactedAt = new Date(); l.lastContactedAt = new Date(); await l.save();
-  const done = await FollowUp.find({ lead: l._id, status: { $in: OPEN } }); for (const f of done) { f.status = 'Completed'; f.completedAt = new Date(); await f.save(); } await refreshNext(l._id); return scheduleNext(l); }
+  const done = await FollowUp.find({ lead: l._id, status: { $in: OPEN } }); for (const f of done) { f.status = 'Completed'; f.completedAt = new Date(); await f.save(); } await refreshNext(l._id);
+  if (l.department === 'website') startGeneration(l, l.business, { userId: req.user._id }).catch((e) => console.error('website generation could not start:', e.message)); // background, never blocks or breaks outreach
+  return scheduleNext(l); }
 r.post('/record', wrap(async (req, res) => { // email / call / other contact the user did and is recording as completed (counts toward goals; opens and AI drafts never do)
   const b = z.object({ leadId: z.string(), channel: z.enum(['email', 'call', 'other']), note: z.string().max(500).optional() }).parse(req.body); const l = await getLead(req, b.leadId); assertTerritory(req, l);
   if (['Do Not Contact', 'Invalid Contact'].includes(l.status)) throw new HttpError(422, `This lead is marked "${l.status}"`);
